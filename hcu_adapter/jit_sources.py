@@ -241,7 +241,13 @@ def bind(resolver, loader, source_root, bundle):
         includes = [mapped(p) for p in loader.__globals__["DEFAULT_INCLUDE"]]
         if str(bundle / "include") not in includes:
             raise RuntimeError("jit_sources: default compiler include root changed")
-        includes.append(str(bundle / "cuda-headers"))
+        defaults = loader.__globals__["DEFAULT_INCLUDE"]
+
+        class CompilerIncludes:
+            def __iter__(self):
+                yield from (mapped(p) for p in defaults)
+                yield str(bundle / "cuda-headers")
+
         build_spec = loader.__globals__["BuildSpec"]
 
         def compiler_spec(**fields):
@@ -251,7 +257,7 @@ def bind(resolver, loader, source_root, bundle):
             return build_spec(**fields)
 
         load = _original(loader, dict(
-            loader.__globals__, DEFAULT_INCLUDE=includes, resolve_sources=resolve_inputs,
+            loader.__globals__, DEFAULT_INCLUDE=CompilerIncludes(), resolve_sources=resolve_inputs,
             BuildSpec=compiler_spec,
         ))
         _bind(resolver, resolve_inputs, identity)

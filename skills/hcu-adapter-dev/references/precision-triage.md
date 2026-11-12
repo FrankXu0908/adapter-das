@@ -63,3 +63,27 @@
   形状、非连续状态视图）但 serving 中 Berlin 锚点确定性翻转；emu/fork
   启动二分 + 干净重启复现可实锤"内核在服务上下文特有"。任何内核替换默认
   不启用，e2e 锚点门过了才转默认。
+
+## DeepSeek V4.1 channel-FP8：MoE 截断参数不能丢失
+
+2026-11-12 nmz18：HumanEval 原始代码中混入无关词，关闭 DSPARK folded
+proposal 后完整 164 题仍为 58.5%。精确 token IDs 的 prefill 重放也出现
+异常候选词，不能只归因于草稿采样或 Graph。
+
+`MoeRunnerConfig.swiglu_limit` 与 `gemm1_clamp_limit` 是两个字段。
+DSV4 checkpoint 要求前者为 10；AITER 桥必须优先把非 None 的
+`swiglu_limit` 传给 vendor 的 `gemm1_limit`，否则才保留原
+`gemm1_clamp_limit`。仅传后者会静默丢失模型的激活截断。不可用
+`swiglu_limit or gemm1_clamp_limit`，显式零值同样应保留。
+
+回归入口：`tests/adapter/test_aiter_moe_bridge.py` 检查 vendor 参数契约；
+`tests/kernels/test_aiter_moe.py` 用可解析的 channel-FP8 权重比较
+有/无截断的数值，再以三波变输入检查 Graph replay。恒定幅值的输入
+和权重可被 FP8 精确表示，参考仍保留 BF16/FP8 路径的数值容差。
+完整模型修复后分数须另记实际服务证据，单测通过不代替模型验收。
+
+验收补充（2026-11-12）：恢复默认 folded proposal 后，nmz18 原 TP8 +
+DSPARK + decode Graph 配置的完整 HumanEval 为 158/164（96.3%）。同一
+精确 token 序列在异常位置的 `成品` logprob 从 -6.1613 降至 -25.1250，
+正确缩进的 logprob 从 -0.2863 恢复到约 -1.07e-6。参数遗漏的反例、
+真实 HCU 数值/变输入 Graph 和原配置模型回归共同验证修复；本轮未重跑 GSM8K。

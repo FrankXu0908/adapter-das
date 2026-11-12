@@ -486,7 +486,8 @@ BACKEND_CATALOG = {
                       "note": "DTK aiter_moe; blockwise->ASM tuned csv, "
                               "channelwise->moe_c; rel 0.02-0.04 gate "
                               "PASS (nmz18 gfx938); unlisted shapes "
-                              "auto-fallback to triton"},
+                              "auto-fallback to triton; swiglu_limit overrides "
+                              "gemm1_clamp_limit at the vendor boundary"},
         },
     },
     "w4a16_moe": {
