@@ -1,6 +1,6 @@
 # 算子档位矩阵（自动生成，勿手改）
 
-> 生成：`python tools/gen_tier_matrix.py`（最近 2026-11-12）；事实源 = `BACKEND_CATALOG`（hcu_adapter/hcu_config.py）。
+> 生成：`python tools/gen_tier_matrix.py`（最近 2026-11-13）；事实源 = `BACKEND_CATALOG`（hcu_adapter/hcu_config.py）。
 > L0 `impl-naming` 做新鲜度校验改表须随 catalog 同 commit（governance §3b）。
 > 文件命名导航规则见 governance §3b；缺档 = 该行空白——那是实现排期的直接输入。
 
@@ -250,7 +250,7 @@ triton extra.cuda libdevice -> hip/OCML 重定向（is_cuda 语义选路修正�
 
 ## flash_attention
 
-fa3 backend 注意力面（kvcache 分页/统一窗 + varlen prefill）
+fa3 backend 注意力面（kvcache 分页/统一窗 + varlen prefill；dense 保留官方 FA2 回退）
 
 | 档位 | 状态 / 备注 |
 |---|---|

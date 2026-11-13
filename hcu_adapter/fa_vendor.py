@@ -36,6 +36,7 @@ e2e anchor is the models.md row.
 
 import logging
 import os
+from functools import wraps
 
 import torch
 
@@ -196,15 +197,53 @@ _VARLEN_NAMES = (
 ).split(",")
 
 
+def _preserve_dense_varlen(ragged):
+    """Keep upstream's FA2 dense fallback before the ragged shape adapter.
+
+    The host bridge forces FA3 capability for paged attention, so calling
+    the original v3 wrapper would re-enter the ragged shadow kernel. Match
+    its non-FA3 fallback directly, including FA2's optional return tuple.
+    """
+    @wraps(ragged)
+    def routed(*args, **kwargs):
+        p = dict(zip(_VARLEN_NAMES, args))
+        p.update(kwargs)
+        cu_q, cu_k = p.get("cu_seqlens_q"), p.get("cu_seqlens_k")
+        if cu_q is None or cu_k is None:
+            if cu_q is not None or cu_k is not None or not all(
+                p.get(name) is not None and p[name].dim() == 4
+                for name in ("q", "k", "v")
+            ):
+                raise ValueError(
+                    "flash attention requires 4D dense Q/K/V without sequence "
+                    "boundaries, or both cu_seqlens_q and cu_seqlens_k"
+                )
+            from flash_attn import flash_attn_func
+
+            return flash_attn_func(
+                p["q"], p["k"], p["v"],
+                softmax_scale=p.get("softmax_scale"),
+                causal=p.get("causal", False),
+                window_size=p.get("window_size", (-1, -1)),
+                softcap=p.get("softcap", 0.0),
+                return_attn_probs=p.get("return_softmax_lse", False),
+            )
+        return ragged(*args, **kwargs)
+
+    return routed
+
+
 def _varlen_triton_ok(p):
     """Host-only (capture-safe, no device reads) gate for the triton
-    varlen kernel's contract; everything else keeps the emu."""
+    varlen kernel's contract; ops-layer dense calls are routed separately."""
     q = p.get("q")
     k = p.get("k")
     v = p.get("v")
     if q is None or k is None or v is None:
         return False
     if q.dim() != 3 or k.dim() != 3 or v.dim() != 3:
+        return False
+    if p.get("cu_seqlens_q") is None or p.get("cu_seqlens_k") is None:
         return False
     if p.get("page_table") is not None:
         return False
@@ -529,6 +568,7 @@ def _install_triton_decode(_sk_fa, registry):
     try:
         import sglang.kernels.ops.attention.flash_attention_v3 as _fa3v
 
+        @_preserve_dense_varlen
         def _ops_varlen(q, k, v, cu_seqlens_q, cu_seqlens_k,
                         max_seqlen_q=None, max_seqlen_k=None,
                         seqused_q=None, seqused_k=None, page_table=None,
@@ -560,8 +600,8 @@ def _install_triton_decode(_sk_fa, registry):
             _ops_varlen,
             target="sglang...flash_attention_v3:flash_attn_varlen_func",
             mechanism=registry.MECH_REBIND,
-            detail="ops-layer varlen rebind; triton ragged core + emu "
-                   "contract-exceed route",
+            detail="ops-layer varlen rebind; upstream FA2 dense fallback + "
+                   "triton ragged core + emu contract-exceed route",
         )
         # the public dispatcher copied the v3 symbol at import time
         # (from-import); rebind its module global too so backend calls
@@ -619,6 +659,21 @@ def install():
         return
     vendor_enabled = mode == "vendor"
     if mode == "emu" or mode == "auto":
+        from sglang.kernels.ops.attention import flash_attention_v3 as _fa3v
+        from sglang.kernels.ops.attention import flash_attention as _fapub
+
+        dense_safe = _preserve_dense_varlen(_fa3v.flash_attn_varlen_func)
+        _fa3v.flash_attn_varlen_func = dense_safe
+        _fapub.fa3_flash_attn_varlen_func = dense_safe
+        for target in (
+            "sglang...flash_attention_v3:flash_attn_varlen_func",
+            "sglang...ops.attention.flash_attention:fa3_flash_attn_varlen_func global",
+        ):
+            registry.register(
+                "flash_attention", dense_safe, target=target,
+                mechanism=registry.MECH_REBIND,
+                detail="upstream FA2 dense fallback; ragged keeps emulation",
+            )
         if mode == "auto":
             # gfx936 vendor-wheel paged kernel produces token-soup on the
             # real decode path (uniform-window A/B passes, live decode
@@ -824,6 +879,7 @@ def install():
                 out=out,
             )
 
+        @_preserve_dense_varlen
         def _ops_varlen(
             q,
             k,
@@ -873,6 +929,19 @@ def install():
         _fa3v.flash_attn_with_kvcache = _ops_kvcache
         _fa3v.flash_attn_varlen_func = _ops_varlen
 
+        # The public dispatcher caches this v3 callable at import time.
+        import sglang.kernels.ops.attention.flash_attention as _fapub
+
+        if hasattr(_fapub, "fa3_flash_attn_varlen_func"):
+            _fapub.fa3_flash_attn_varlen_func = _ops_varlen
+            registry.register(
+                "flash_attention", _ops_varlen,
+                target="sglang...ops.attention.flash_attention:"
+                       "fa3_flash_attn_varlen_func global",
+                mechanism=registry.MECH_REBIND,
+                detail="dispatcher varlen alias; preserve upstream dense fallback",
+            )
+
         for target, fn in (
             ("sglang...flash_attention_v3:flash_attn_with_kvcache", _ops_kvcache),
             ("sglang...flash_attention_v3:flash_attn_varlen_func", _ops_varlen),
@@ -882,7 +951,8 @@ def install():
                 fn,
                 target=target,
                 mechanism=registry.MECH_REBIND,
-                detail="ops-layer rebind; vendor wheel, stable kwargs",
+                detail="ops-layer rebind; vendor wheel, stable kwargs; "
+                       "varlen entry preserves upstream FA2 dense fallback",
             )
     except Exception:
         LOG.warning(

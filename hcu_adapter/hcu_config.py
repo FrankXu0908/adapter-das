@@ -394,7 +394,7 @@ BACKEND_CATALOG = {
     },
     "flash_attention": {
         "var": "HCU_FA_IMPL",
-        "summary": "fa3 backend 注意力面（kvcache 分页/统一窗 + varlen prefill）",
+        "summary": "fa3 backend 注意力面（kvcache 分页/统一窗 + varlen prefill；dense 保留官方 FA2 回退）",
         "backends": {
             "vendor": {"status": "candidate",
                        "note": "DTK flash_attn 2.8.4 wheel（gfx93x kernel）；"

@@ -93,3 +93,22 @@ marlin repack 只在 lightop 有（aiter 无交）。
 4. **写契约测试**：按 `test-suite.md` 四维度；vendor 高危面同时写场景
    压测 + 注册快关（`kill-switches.md`）。
 5. **更新矩阵**：本文件表格 + README 覆盖范围表。
+
+### SGLang dense cross-attention 与 varlen 的边界
+
+`flash_attention_v3.flash_attn_varlen_func` 的官方 FA2 回退还支持四维
+`[batch, sequence, heads, dim]` Q/K/V 与两项 `cu_seqlens=None`。
+`fa_vendor` 的 Triton/vendor ops 入口须先分流这种 dense 调用，保留 batch
+并按官方参数和返回契约委托 `flash_attn_func`；不能先展平再送进 varlen。
+宿主桥强制放行 FA3，直接调用保存的原 v3 函数仍会进入 shadow varlen，
+因此这里复用的是官方 FA2 回退调用面。LSE 保留 FA2 原返回 tuple；`out`
+等额外参数沿用官方 FA2 回退的处理，不另行扩展语义。
+
+varlen Triton 准入至少要求两项序列边界存在；缺失/单边缺失边界的三维
+调用须在 ops 入口明确拒绝，不能仅给诊断日志的 `.numel()` 加判空。
+离线路由回归见 `tests/adapter/test_fa_dense_dispatch.py`；真实公共 dispatcher
+数值及变输入 Graph 回归见 `tests/kernels/test_flash_attn_dense_dispatch.py`，
+需分别用新进程验证 `HCU_FA_IMPL=auto/emu/triton/vendor`。
+`release/sglang_v0.5.22` 的 auto 默认走 emu，必须在该入口同时保留
+dense 回退并刷新公共 dispatcher 缓存别名；ragged 继续调用原 emu。组件结果不替代 Wan
+模型生成与质量验证，也不代表所有 vendor attention 场景均已验证。
